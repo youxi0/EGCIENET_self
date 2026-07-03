@@ -95,3 +95,30 @@ Save predicted edge maps for inspection:
 ```bash
 python test.py --data-root ./Dataset/AEBIS/Test/ --model-path ./model/final.pth --out-path output/aebis/ --save-edge
 ```
+
+Class-wise metrics are enabled automatically when `Dataset/AEBIS_Class.zip`
+exists. This zip contains Labelme JSON files with defect labels, so the test
+script groups test images by defect type and reports per-defect binary
+segmentation quality:
+
+```bash
+python test.py \
+  --data-root ./Dataset/AEBIS/Test/ \
+  --model-path ./model/final.pth \
+  --out-path output/aebis/ \
+  --class-json-path ./Dataset/AEBIS_Class.zip \
+  --metrics-csv output/aebis/metrics.csv
+```
+
+The known raw defect labels are:
+
+```text
+Burn, Dent, Material missing, Crack, Tears, Tip curl, Nick
+```
+
+Because the model predicts a binary defect mask rather than a defect category,
+the class-wise table is computed by grouping images according to their Labelme
+defect labels, then evaluating the binary mask within each group.
+
+For deployment profiling, `pipeline speed` includes loading, saving, and metric
+computation, while `model forward speed` measures only the PyTorch forward pass.
