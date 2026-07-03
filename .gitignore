@@ -5,6 +5,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 model/
+output/
 .DS_Store
 Thumbs.db
 mit_b3.pth
