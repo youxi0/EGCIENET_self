@@ -122,3 +122,8 @@ defect labels, then evaluating the binary mask within each group.
 
 For deployment profiling, `pipeline speed` includes loading, saving, and metric
 computation, while `model forward speed` measures only the PyTorch forward pass.
+
+## Deployment
+
+ONNX export and TensorRT FP16/INT8 engine build commands are documented in
+[`DEPLOY.md`](DEPLOY.md).
