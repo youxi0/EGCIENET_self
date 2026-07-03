@@ -10,7 +10,9 @@ from torch.utils.data import DataLoader
 
 from baseline import Mnet
 from lib.dataset import Data
-from pytorch_iou.IOU_CrossValidation import miou
+
+
+IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.bmp')
 
 
 def parse_args():
@@ -23,6 +25,7 @@ def parse_args():
     parser.add_argument('--gpu', default='0')
     parser.add_argument('--threshold', type=float, default=0.5)
     parser.add_argument('--save-edge', action='store_true', help='Save predicted edge maps for inspection.')
+    parser.add_argument('--no-metrics', action='store_true', help='Only save predictions, do not evaluate masks.')
     return parser.parse_args()
 
 
@@ -30,6 +33,68 @@ def to_int(value):
     if torch.is_tensor(value):
         return int(value.item())
     return int(value)
+
+
+def find_mask_path(mask_dir, stem):
+    for ext in IMAGE_EXTS:
+        path = os.path.join(mask_dir, stem + ext)
+        if os.path.exists(path):
+            return path
+    return None
+
+
+class BinarySegMetrics(object):
+    def __init__(self, eps=1e-7):
+        self.eps = eps
+        self.tp = 0
+        self.fp = 0
+        self.fn = 0
+        self.tn = 0
+        self.mae_sum = 0.0
+        self.pixel_count = 0
+        self.image_count = 0
+
+    def update(self, pred_prob, pred_bin, gt_bin):
+        pred_bin = pred_bin.astype(bool)
+        gt_bin = gt_bin.astype(bool)
+
+        self.tp += int(np.logical_and(pred_bin, gt_bin).sum())
+        self.fp += int(np.logical_and(pred_bin, np.logical_not(gt_bin)).sum())
+        self.fn += int(np.logical_and(np.logical_not(pred_bin), gt_bin).sum())
+        self.tn += int(np.logical_and(np.logical_not(pred_bin), np.logical_not(gt_bin)).sum())
+        self.mae_sum += float(np.abs(pred_prob.astype(np.float32) - gt_bin.astype(np.float32)).sum())
+        self.pixel_count += int(gt_bin.size)
+        self.image_count += 1
+
+    def compute(self):
+        tp = float(self.tp)
+        fp = float(self.fp)
+        fn = float(self.fn)
+        tn = float(self.tn)
+        eps = self.eps
+
+        precision = tp / (tp + fp + eps)
+        recall = tp / (tp + fn + eps)
+        specificity = tn / (tn + fp + eps)
+        accuracy = (tp + tn) / (tp + tn + fp + fn + eps)
+        dice = (2.0 * tp) / (2.0 * tp + fp + fn + eps)
+        iou_fg = tp / (tp + fp + fn + eps)
+        iou_bg = tn / (tn + fp + fn + eps)
+        miou = 0.5 * (iou_fg + iou_bg)
+        mae = self.mae_sum / max(self.pixel_count, 1)
+
+        return {
+            'images': self.image_count,
+            'Accuracy': accuracy,
+            'Precision': precision,
+            'Recall': recall,
+            'Specificity': specificity,
+            'Dice/F1': dice,
+            'IoU_fg': iou_fg,
+            'IoU_bg': iou_bg,
+            'mIoU': miou,
+            'MAE': mae,
+        }
 
 
 if __name__ == '__main__':
@@ -43,6 +108,9 @@ if __name__ == '__main__':
 
     data = Data(root=args.data_root, mode='test', image_size=args.image_size)
     loader = DataLoader(data, batch_size=1, shuffle=False, num_workers=0)
+    gt_dir = os.path.join(args.data_root, 'BlackWhite')
+    eval_metrics = (not args.no_metrics) and os.path.isdir(gt_dir)
+    metrics = BinarySegMetrics() if eval_metrics else None
 
     net = Mnet(pretrained=False, edge_channels=args.edge_channels).cuda()
     print('loading model from {}...'.format(args.model_path))
@@ -63,9 +131,21 @@ if __name__ == '__main__':
             score1 = F.interpolate(score1, size=(h, w), mode='bilinear', align_corners=True)
 
             pred = np.squeeze(torch.sigmoid(score1).cpu().data.numpy())
-            pred = (pred > args.threshold).astype(np.uint8) * 255
+            pred_bin = pred > args.threshold
+            pred_save = pred_bin.astype(np.uint8) * 255
             mask_name = os.path.splitext(name[0])[0] + '.png'
-            cv2.imwrite(os.path.join(args.out_path, mask_name), pred)
+            cv2.imwrite(os.path.join(args.out_path, mask_name), pred_save)
+
+            if eval_metrics:
+                stem = os.path.splitext(name[0])[0]
+                gt_path = find_mask_path(gt_dir, stem)
+                if gt_path is not None:
+                    gt = cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE)
+                    if gt is None:
+                        raise FileNotFoundError('Could not read mask: {}'.format(gt_path))
+                    if gt.shape != pred.shape:
+                        gt = cv2.resize(gt, dsize=(pred.shape[1], pred.shape[0]), interpolation=cv2.INTER_NEAREST)
+                    metrics.update(pred, pred_bin, gt > 127)
 
             if args.save_edge:
                 edge = F.interpolate(edge_prob, size=(h, w), mode='bilinear', align_corners=True)
@@ -78,7 +158,10 @@ if __name__ == '__main__':
     time_e = time.time()
     print('speed: {:.6f} FPS'.format(img_num / (time_e - time_s)))
 
-    gt_dir = os.path.join(args.data_root, 'BlackWhite')
-    if os.path.isdir(gt_dir):
-        mIOU = miou(args.out_path, gt_dir)
-        print('mIoU: {}'.format(mIOU))
+    if eval_metrics and metrics.image_count > 0:
+        result = metrics.compute()
+        print('metrics on {} images, threshold={:.2f}:'.format(result['images'], args.threshold))
+        for key in ('Accuracy', 'Precision', 'Recall', 'Specificity', 'Dice/F1', 'IoU_fg', 'IoU_bg', 'mIoU', 'MAE'):
+            print('{}: {:.6f}'.format(key, result[key]))
+    elif not args.no_metrics:
+        print('metrics skipped: ground-truth directory not found at {}'.format(gt_dir))

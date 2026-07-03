@@ -79,6 +79,17 @@ L = L_seg + edge_loss_weight * BCE(edge_pred, edge_sam)
 python test.py --data-root ./Dataset/AEBIS/Test/ --model-path ./model/final.pth --out-path output/aebis/
 ```
 
+If `Dataset/AEBIS/Test/BlackWhite/` exists, the script will also print binary
+segmentation metrics:
+
+```text
+Accuracy, Precision, Recall, Specificity, Dice/F1, IoU_fg, IoU_bg, mIoU, MAE
+```
+
+`IoU_fg` and `Dice/F1` are usually the most important values for defect
+segmentation, because the defect pixels are the foreground class. Use
+`--threshold` to change the binary mask threshold.
+
 Save predicted edge maps for inspection:
 
 ```bash
