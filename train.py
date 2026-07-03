@@ -48,11 +48,34 @@ def edge_loss(edge_logit, edge_target):
     return F.binary_cross_entropy_with_logits(edge_logit, edge_target, reduction='mean')
 
 
+def resolve_pretrained(value):
+    if value is None:
+        return False
+
+    value = str(value).strip()
+    if value.lower() in ('', 'none', 'false', '0', 'no'):
+        return False
+
+    if not os.path.isfile(value):
+        raise FileNotFoundError(
+            "MiT-B3 pretrained weight not found: '{}'. "
+            "Download the SegFormer MiT-B3 ImageNet-1K weight and pass "
+            "--pretrained /path/to/mit_b3.pth, or pass --pretrained none "
+            "to train from scratch.".format(value)
+        )
+
+    return value
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Train EGCIENet with a distilled edge branch.')
     parser.add_argument('--train-root', default='./Dataset/AEBIS/Train/', help='Training dataset root.')
     parser.add_argument('--save-path', default='./model', help='Directory for checkpoints.')
-    parser.add_argument('--pretrained', default='mit_b3.pth', help='MiT pretrained weight path. Use empty string to disable.')
+    parser.add_argument(
+        '--pretrained',
+        default='mit_b3.pth',
+        help="MiT pretrained weight path. Use 'none' to train from scratch.",
+    )
     parser.add_argument('--image-size', type=int, default=352)
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--epoch', type=int, default=100)
@@ -93,7 +116,7 @@ if __name__ == '__main__':
         drop_last=True,
     )
 
-    pretrained = args.pretrained if args.pretrained else False
+    pretrained = resolve_pretrained(args.pretrained)
     net = Mnet(pretrained=pretrained, edge_channels=args.edge_channels).cuda()
     optimizer = optim.SGD(
         filter(lambda p: p.requires_grad, net.parameters()),

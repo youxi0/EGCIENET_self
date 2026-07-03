@@ -1,3 +1,5 @@
+import os
+
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -221,6 +223,11 @@ class Segformer(nn.Module):
         ## initilize encoder
         if pretrained:
             weight_path = pretrained if isinstance(pretrained, str) else backbone + '.pth'
+            if not os.path.isfile(weight_path):
+                raise FileNotFoundError(
+                    "MiT pretrained weight not found: '{}'. Pass a valid --pretrained "
+                    "path, or use --pretrained none to train without ImageNet weights.".format(weight_path)
+                )
             state_dict = torch.load(weight_path, map_location='cpu')
             if isinstance(state_dict, dict) and 'state_dict' in state_dict:
                 state_dict = state_dict['state_dict']

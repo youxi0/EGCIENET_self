@@ -34,6 +34,8 @@ Access code: tmx2
 ```
 
 Place `mit_b3.pth` in the project root, or pass `--pretrained path/to/mit_b3.pth`.
+If you only want to check whether the training pipeline can run, pass `--pretrained none`
+to train from scratch.
 
 ## Dependencies
 
@@ -55,6 +57,12 @@ Optional mixed precision:
 
 ```bash
 python train.py --train-root ./Dataset/AEBIS/Train/ --batch-size 16 --amp --gpu 0
+```
+
+Run without MiT-B3 pretrained weights:
+
+```bash
+python train.py --train-root ./Dataset/AEBIS/Train/ --batch-size 16 --edge-loss-weight 1.0 --gpu 0 --amp --pretrained none
 ```
 
 The total training loss is:
