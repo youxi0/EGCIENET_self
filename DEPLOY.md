@@ -6,6 +6,10 @@ This deployment path is intended for Jetson Orin Nano:
 PyTorch checkpoint -> ONNX FP32 -> TensorRT FP16 / INT8 engine
 ```
 
+The current model uses the v2 distilled edge branch. Internally it produces a
+1/4-scale edge map and first-stage edge guidance tokens. It no longer exports a
+full-resolution edge decoder path unless `--output-edge` is explicitly enabled.
+
 ## 1. Model input and output
 
 The exported deployment model has one input:
@@ -50,7 +54,8 @@ range: 0-1 probability
 ```
 
 The edge output is for visualization/debugging. Production deployment usually
-only needs `mask`.
+only needs `mask`. Without `--output-edge`, the exported ONNX graph does not
+include the extra edge resize output path.
 
 ## 2. Export ONNX
 
@@ -62,6 +67,7 @@ python deploy/export_onnx.py \
   --onnx-path ./deploy/egcienet_352.onnx \
   --image-size 352 \
   --batch-size 1 \
+  --edge-channels 16 \
   --device cuda
 ```
 
@@ -73,6 +79,7 @@ python deploy/export_onnx.py \
   --onnx-path ./deploy/egcienet_352_edge.onnx \
   --image-size 352 \
   --batch-size 1 \
+  --edge-channels 16 \
   --device cuda \
   --output-edge
 ```

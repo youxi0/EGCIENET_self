@@ -26,7 +26,7 @@ def parse_args():
     parser.add_argument('--model-path', default='./model/final.pth', help='Checkpoint path.')
     parser.add_argument('--out-path', default='output/aebis/', help='Directory for predicted masks.')
     parser.add_argument('--image-size', type=int, default=352)
-    parser.add_argument('--edge-channels', type=int, default=32)
+    parser.add_argument('--edge-channels', type=int, default=16)
     parser.add_argument('--gpu', default='0')
     parser.add_argument('--threshold', type=float, default=0.5)
     parser.add_argument('--save-edge', action='store_true', help='Save predicted edge maps for inspection.')

@@ -44,7 +44,9 @@ def segmentation_loss(score1, score2, score3, label):
 
 
 def edge_loss(edge_logit, edge_target):
-    edge_logit = F.interpolate(edge_logit, edge_target.shape[2:], mode='bilinear', align_corners=True)
+    if edge_target.shape[2:] != edge_logit.shape[2:]:
+        edge_target = F.interpolate(edge_target, edge_logit.shape[2:], mode='area')
+    edge_target = edge_target.clamp(0, 1)
     return F.binary_cross_entropy_with_logits(edge_logit, edge_target, reduction='mean')
 
 
@@ -84,7 +86,7 @@ def parse_args():
     parser.add_argument('--weight-decay', type=float, default=0.0005)
     parser.add_argument('--momentum', type=float, default=0.9)
     parser.add_argument('--edge-loss-weight', type=float, default=1.0)
-    parser.add_argument('--edge-channels', type=int, default=32)
+    parser.add_argument('--edge-channels', type=int, default=16)
     parser.add_argument('--num-workers', type=int, default=4)
     parser.add_argument('--print-freq', type=int, default=10)
     parser.add_argument('--seed', type=int, default=118)

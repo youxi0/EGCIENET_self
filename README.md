@@ -1,8 +1,14 @@
 # EGCIENet: In-service blade defect detection
 
-This version adds a lightweight edge branch that distills offline SAM edge maps.
+This version adds a TensorRT-friendly edge branch that distills offline SAM edge maps.
 During training, SAM edge maps are used only as supervision for the edge branch.
 During inference, SAM is not required.
+
+The current edge branch is v2. It predicts a 1/4-scale edge map and directly
+generates the first-stage edge guidance tokens, avoiding the expensive
+full-resolution U-Net-like edge decoder used in the previous version. Checkpoints
+from the previous edge branch are not architecture-compatible; retrain the model
+after this change.
 
 ## Data layout
 
@@ -71,7 +77,8 @@ The total training loss is:
 L = L_seg + edge_loss_weight * BCE(edge_pred, edge_sam)
 ```
 
-`L_seg` keeps the original three-output deep supervision with BCE + IoU.
+`edge_sam` is downsampled to the edge branch output size before BCE. `L_seg`
+keeps the original three-output deep supervision with BCE + IoU.
 
 ## Test
 

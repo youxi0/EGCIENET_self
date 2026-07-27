@@ -52,7 +52,7 @@ def parse_args():
     parser.add_argument('--onnx-path', default='./deploy/egcienet_352.onnx')
     parser.add_argument('--image-path', default='', help='Optional input image. Random input is used if empty.')
     parser.add_argument('--image-size', type=int, default=352)
-    parser.add_argument('--edge-channels', type=int, default=32)
+    parser.add_argument('--edge-channels', type=int, default=16)
     parser.add_argument('--device', default='cuda', choices=['cuda', 'cpu'])
     parser.add_argument('--save-mask', default='', help='Optional path to save ONNX mask probability as png.')
     return parser.parse_args()

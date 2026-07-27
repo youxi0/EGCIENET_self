@@ -34,14 +34,18 @@ class DeployModel(nn.Module):
 
         if self.output_logits:
             mask = mask_logit
-            edge = F.interpolate(edge_logit, size=image.shape[2:], mode='bilinear', align_corners=True)
         else:
             mask = torch.sigmoid(mask_logit)
+
+        if not self.output_edge:
+            return mask
+
+        if self.output_logits:
+            edge = F.interpolate(edge_logit, size=image.shape[2:], mode='bilinear', align_corners=True)
+        else:
             edge = F.interpolate(edge_prob, size=image.shape[2:], mode='bilinear', align_corners=True)
 
-        if self.output_edge:
-            return mask, edge
-        return mask
+        return mask, edge
 
 
 def strip_module_prefix(state_dict):
@@ -53,7 +57,7 @@ def strip_module_prefix(state_dict):
     return cleaned
 
 
-def load_mnet(model_path, edge_channels=32, device='cpu', strict=True):
+def load_mnet(model_path, edge_channels=16, device='cpu', strict=True):
     model = Mnet(pretrained=False, edge_channels=edge_channels)
     checkpoint = torch.load(model_path, map_location='cpu')
     if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
@@ -106,7 +110,7 @@ def parse_args():
     parser.add_argument('--onnx-path', default='./deploy/egcienet_352.onnx', help='Output ONNX path.')
     parser.add_argument('--image-size', type=int, default=352, help='Export input height/width.')
     parser.add_argument('--batch-size', type=int, default=1, help='Export batch size.')
-    parser.add_argument('--edge-channels', type=int, default=32)
+    parser.add_argument('--edge-channels', type=int, default=16)
     parser.add_argument('--device', default='cuda', choices=['cuda', 'cpu'])
     parser.add_argument('--opset', type=int, default=13)
     parser.add_argument('--output-edge', action='store_true', help='Export edge probability as a second output.')

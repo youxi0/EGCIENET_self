@@ -125,57 +125,59 @@ class CSIM(nn.Module):
         return out
 
 
-class EdgeBranch(nn.Module):
-    """Lightweight branch that learns SAM-style edge maps from RGB images."""
+class ConvBNReLU(nn.Module):
+    def __init__(self, in_ch, out_ch, kernel_size=3, stride=1, padding=1, groups=1):
+        super(ConvBNReLU, self).__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, kernel_size=kernel_size, stride=stride,
+                      padding=padding, groups=groups, bias=False),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True),
+        )
 
-    def __init__(self, in_ch=3, base_ch=32):
+    def forward(self, x):
+        return self.block(x)
+
+
+class DepthwiseSeparableConv(nn.Module):
+    def __init__(self, in_ch, out_ch, stride=1):
+        super(DepthwiseSeparableConv, self).__init__()
+        self.block = nn.Sequential(
+            ConvBNReLU(in_ch, in_ch, kernel_size=3, stride=stride, padding=1, groups=in_ch),
+            ConvBNReLU(in_ch, out_ch, kernel_size=1, stride=1, padding=0),
+        )
+
+    def forward(self, x):
+        return self.block(x)
+
+
+class EdgeBranch(nn.Module):
+    """TensorRT-friendly branch that distills SAM-style edges at 1/4 scale."""
+
+    def __init__(self, in_ch=3, base_ch=16, embed_dim=64):
         super(EdgeBranch, self).__init__()
-        self.enc1 = nn.Sequential(
-            nn.Conv2d(in_ch, base_ch, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(base_ch),
-            nn.PReLU(),
-            nn.Conv2d(base_ch, base_ch, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(base_ch),
-            nn.PReLU(),
-        )
-        self.enc2 = nn.Sequential(
-            nn.Conv2d(base_ch, base_ch * 2, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(base_ch * 2),
-            nn.PReLU(),
-            nn.Conv2d(base_ch * 2, base_ch * 2, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(base_ch * 2),
-            nn.PReLU(),
-        )
-        self.enc3 = nn.Sequential(
-            nn.Conv2d(base_ch * 2, base_ch * 4, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(base_ch * 4),
-            nn.PReLU(),
-            nn.Conv2d(base_ch * 4, base_ch * 4, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(base_ch * 4),
-            nn.PReLU(),
-        )
-        self.dec2 = nn.Sequential(
-            nn.Conv2d(base_ch * 4 + base_ch * 2, base_ch * 2, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(base_ch * 2),
-            nn.PReLU(),
-        )
-        self.dec1 = nn.Sequential(
-            nn.Conv2d(base_ch * 2 + base_ch, base_ch, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(base_ch),
-            nn.PReLU(),
-        )
-        self.out_conv = nn.Conv2d(base_ch, 1, kernel_size=1, stride=1, padding=0)
+        mid_ch = base_ch * 2
+        self.stem = ConvBNReLU(in_ch, base_ch, kernel_size=3, stride=2, padding=1)
+        self.refine1 = DepthwiseSeparableConv(base_ch, base_ch)
+        self.down = ConvBNReLU(base_ch, mid_ch, kernel_size=3, stride=2, padding=1)
+        self.refine2 = DepthwiseSeparableConv(mid_ch, mid_ch)
+        self.refine3 = DepthwiseSeparableConv(mid_ch, mid_ch)
+        self.edge_head = nn.Conv2d(mid_ch, 1, kernel_size=1, stride=1, padding=0)
+        self.feature_proj = ConvBNReLU(mid_ch, embed_dim, kernel_size=1, stride=1, padding=0)
+        self.edge_proj = ConvBNReLU(1, embed_dim, kernel_size=1, stride=1, padding=0)
 
     def forward(self, rgb):
-        e1 = self.enc1(rgb)
-        e2 = self.enc2(e1)
-        e3 = self.enc3(e2)
+        x = self.stem(rgb)
+        x = self.refine1(x)
+        x = self.down(x)
+        x = self.refine2(x)
+        x = self.refine3(x)
+        edge_logit = self.edge_head(x)
+        edge_embed = self.feature_proj(x) + self.edge_proj(torch.sigmoid(edge_logit))
+        return edge_logit, edge_embed
 
-        d2 = F.interpolate(e3, size=e2.shape[2:], mode='bilinear', align_corners=True)
-        d2 = self.dec2(torch.cat([d2, e2], dim=1))
-        d1 = F.interpolate(d2, size=e1.shape[2:], mode='bilinear', align_corners=True)
-        d1 = self.dec1(torch.cat([d1, e1], dim=1))
-        return self.out_conv(d1)
+    def guidance_to_embed(self, edge_guidance):
+        return self.edge_proj(edge_guidance)
 
 
 class Decoder(nn.Module):  # 解码器
@@ -241,12 +243,13 @@ class Segformer(nn.Module):
 
 
 class Mnet(nn.Module):
-    def __init__(self, backbone="mit_b3", pretrained=True, edge_channels=32):
+    def __init__(self, backbone="mit_b3", pretrained=True, edge_channels=16):
         super(Mnet, self).__init__()
 
         net = Segformer(backbone, pretrained)
-        self.edge_branch = EdgeBranch(base_ch=edge_channels)
         self.rgb_encoder = net.encoder
+        edge_embed_dim = self.rgb_encoder.embed_dims[0]
+        self.edge_branch = EdgeBranch(base_ch=edge_channels, embed_dim=edge_embed_dim)
         self.decoder = Decoder()
         self.sigmoid = nn.Sigmoid()
 
@@ -255,20 +258,17 @@ class Mnet(nn.Module):
         B = rgb.shape[0]
         rgb_f = []
 
-        edge_logit = self.edge_branch(rgb)
-        if use_teacher_edge and edge is not None:
-            edge_guidance = edge
-        else:
-            edge_guidance = self.sigmoid(edge_logit)
-
-        if edge_guidance.shape[2:] != rgb.shape[2:]:
-            edge_guidance = F.interpolate(edge_guidance, size=rgb.shape[2:], mode='bilinear', align_corners=True)
-
-        expanded_edge = edge_guidance.expand(-1, 3, -1, -1)
-        edge_x, edge_H, edge_W = self.rgb_encoder.patch_embed1(expanded_edge)
+        edge_logit, edge_embed = self.edge_branch(rgb)
 
         # stage 1
         x, H, W = self.rgb_encoder.patch_embed1(rgb)
+        if use_teacher_edge and edge is not None:
+            edge_guidance = F.interpolate(edge, size=(H, W), mode='area')
+            edge_embed = self.edge_branch.guidance_to_embed(edge_guidance)
+        elif edge_embed.shape[2:] != (H, W):
+            edge_embed = F.interpolate(edge_embed, size=(H, W), mode='bilinear', align_corners=True)
+
+        edge_x = edge_embed.flatten(2).transpose(1, 2).contiguous()
         for i, blk in enumerate(self.rgb_encoder.block1):
             x = blk(x, H, W, edge_x)
         x = self.rgb_encoder.norm1(x)
