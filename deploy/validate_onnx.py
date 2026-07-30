@@ -78,8 +78,9 @@ def main():
         torch_output = torch_model(torch.from_numpy(input_np).to(args.device)).cpu().numpy()
 
     providers = ['CPUExecutionProvider']
-    if 'CUDAExecutionProvider' in ort.get_available_providers():
+    if args.device == 'cuda' and 'CUDAExecutionProvider' in ort.get_available_providers():
         providers.insert(0, 'CUDAExecutionProvider')
+    print('ONNX Runtime providers: {}'.format(providers))
     session = ort.InferenceSession(args.onnx_path, providers=providers)
     input_name = session.get_inputs()[0].name
     onnx_output = session.run(None, {input_name: input_np})[0]
