@@ -44,6 +44,28 @@ range: 0-1 probability
 Use `mask > 0.5` as the binary defect mask, then resize it back to the
 original image size if needed.
 
+For the multiclass model, export with `--num-classes 5` or let the script infer
+it from the checkpoint. The default output becomes:
+
+```text
+name: mask
+shape: [1, 5, 352, 352]
+dtype: float32
+range: per-class softmax probability
+```
+
+Postprocess with `argmax(mask, axis=1)` to obtain a class-id mask:
+
+```text
+0 background
+1 burn
+2 crack_tear
+3 material_loss
+4 deformation
+```
+
+If a binary defect region is still needed, use `class_id > 0`.
+
 If `--output-edge` is used during export, the ONNX model has a second output:
 
 ```text
@@ -68,6 +90,20 @@ python deploy/export_onnx.py \
   --image-size 352 \
   --batch-size 1 \
   --edge-channels 16 \
+  --device cuda
+```
+
+Multiclass export:
+
+```bash
+python deploy/export_onnx.py \
+  --model-path ./model/final.pth \
+  --onnx-path ./deploy/egcienet_352_multiclass.onnx \
+  --image-size 352 \
+  --batch-size 1 \
+  --edge-channels 16 \
+  --num-classes 5 \
+  --class-config ./Dataset/AEBIS_MultiClass/classes.json \
   --device cuda
 ```
 
@@ -105,6 +141,23 @@ python deploy/validate_onnx.py \
   --device cuda \
   --save-mask ./deploy/onnx_mask_0.png
 ```
+
+Multiclass validation:
+
+```bash
+python deploy/validate_onnx.py \
+  --model-path ./model/final.pth \
+  --onnx-path ./deploy/egcienet_352_multiclass.onnx \
+  --image-path ./Dataset/AEBIS_MultiClass/Test/JPEGImages/0.jpg \
+  --image-size 352 \
+  --num-classes 5 \
+  --class-config ./Dataset/AEBIS_MultiClass/classes.json \
+  --device cuda \
+  --save-mask ./deploy/onnx_class_0.png
+```
+
+When the ONNX output is multiclass, `--save-mask` stores the `argmax` class-id
+mask, not a probability heatmap.
 
 Expected result: the max/mean absolute difference should be small. Small
 numerical differences are normal.
@@ -157,6 +210,9 @@ python deploy/build_tensorrt_engine.py \
   --calib-cache ./deploy/int8_calib.cache \
   --num-calib 300
 ```
+
+For the multiclass model, use `./Dataset/AEBIS_MultiClass/Train/JPEGImages` as
+the calibration image root.
 
 Notes:
 

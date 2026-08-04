@@ -14,13 +14,15 @@ class Compose(object):
 
 
 class Normalize(object):
-    def __init__(self, mean1, std1):
+    def __init__(self, mean1, std1, scale_mask=True):
         self.mean1 = mean1
         self.std1  = std1
+        self.scale_mask = scale_mask
 
     def __call__(self, rgb, mask, edge):
         rgb = (rgb - self.mean1)/self.std1
-        mask /= 255
+        if self.scale_mask:
+            mask /= 255
         edge /= 255
         return rgb, mask, edge
 
@@ -56,7 +58,7 @@ class RandomCrop(object):
         xmin = np.random.randint(W-self.W+1)
         ymin = np.random.randint(H-self.H+1)
         rgb = rgb[ymin:ymin+self.H, xmin:xmin+self.W, :]
-        mask = mask[ymin:ymin+self.H, xmin:xmin+self.W, :]
+        mask = mask[ymin:ymin+self.H, xmin:xmin+self.W, ...]
         edge = edge[ymin:ymin + self.H, xmin:xmin + self.W, :]
         return rgb, mask, edge
 
@@ -65,18 +67,27 @@ class RandomHorizontalFlip(object):
         if np.random.randint(2)==1:
             rgb = rgb[:,::-1,:].copy()
 
-            mask = mask[:,::-1,:].copy()
+            mask = mask[:, ::-1, ...].copy()
             edge = edge[:, ::-1, :].copy()
         return rgb, mask, edge
 
 class ToTensor(object):
+    def __init__(self, mask_mode='binary'):
+        self.mask_mode = mask_mode
+
     def __call__(self, rgb, mask, edge):
         rgb = torch.from_numpy(rgb)
         rgb = rgb.permute(2, 0, 1)
 
-        mask = torch.from_numpy(mask)
-        mask = mask.permute(2, 0, 1)
+        if self.mask_mode == 'multiclass':
+            if mask.ndim == 3:
+                mask = mask[:, :, 0]
+            mask = torch.from_numpy(mask).long()
+        else:
+            mask = torch.from_numpy(mask)
+            mask = mask.permute(2, 0, 1)
+            mask = mask.mean(dim=0, keepdim=True)
 
         edge = torch.from_numpy(edge)
         edge = edge.permute(2, 0, 1)
-        return rgb, mask.mean(dim=0, keepdim=True), edge.mean(dim=0, keepdim=True)
+        return rgb, mask, edge.mean(dim=0, keepdim=True)

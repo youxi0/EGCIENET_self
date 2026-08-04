@@ -9,6 +9,8 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from baseline import Mnet
+from lib.class_config import load_class_config
+from lib.class_config import num_classes as config_num_classes
 from lib.data_prefetcher import DataPrefetcher
 from lib.dataset import Data
 
@@ -28,18 +30,54 @@ def soft_iou_loss(pred, target, eps=1e-6):
     return 1.0 - torch.mean((inter + eps) / (union + eps))
 
 
-def single_mask_loss(logit, label):
+def single_binary_loss(logit, label):
     logit = F.interpolate(logit, label.shape[2:], mode='bilinear', align_corners=True)
     prob = torch.sigmoid(logit)
     bce = F.binary_cross_entropy_with_logits(logit, label, reduction='mean')
     return bce + soft_iou_loss(prob, label)
 
 
-def segmentation_loss(score1, score2, score3, label):
+def foreground_dice_loss(logit, label, num_classes, ignore_index=255, eps=1e-6):
+    valid = label != ignore_index
+    safe_label = label.clone()
+    safe_label[~valid] = 0
+    safe_label = safe_label.clamp(0, num_classes - 1)
+
+    prob = F.softmax(logit, dim=1)
+    target = F.one_hot(safe_label, num_classes=num_classes).permute(0, 3, 1, 2).float()
+    valid = valid.unsqueeze(1).float()
+    prob = prob * valid
+    target = target * valid
+
+    if num_classes > 1:
+        prob = prob[:, 1:, :, :]
+        target = target[:, 1:, :, :]
+
+    inter = torch.sum(prob * target, dim=(0, 2, 3))
+    denom = torch.sum(prob + target, dim=(0, 2, 3))
+    dice = (2.0 * inter + eps) / (denom + eps)
+    return 1.0 - dice.mean()
+
+
+def single_multiclass_loss(logit, label, num_classes, class_weights=None):
+    logit = F.interpolate(logit, label.shape[-2:], mode='bilinear', align_corners=True)
+    ce = F.cross_entropy(logit, label.long(), weight=class_weights, ignore_index=255)
+    dice = foreground_dice_loss(logit, label.long(), num_classes)
+    return ce + dice
+
+
+def segmentation_loss(score1, score2, score3, label, task, num_classes, class_weights=None):
+    if task == 'multiclass':
+        return (
+            single_multiclass_loss(score1, label, num_classes, class_weights)
+            + single_multiclass_loss(score2, label, num_classes, class_weights)
+            + single_multiclass_loss(score3, label, num_classes, class_weights)
+        )
+
     return (
-        single_mask_loss(score1, label)
-        + single_mask_loss(score2, label)
-        + single_mask_loss(score3, label)
+        single_binary_loss(score1, label)
+        + single_binary_loss(score2, label)
+        + single_binary_loss(score3, label)
     )
 
 
@@ -69,9 +107,51 @@ def resolve_pretrained(value):
     return value
 
 
+def resolve_num_classes(task, class_config_path, num_classes_arg):
+    if task == 'binary':
+        return 1, None
+    config = load_class_config(class_config_path)
+    num_classes = int(num_classes_arg) if num_classes_arg > 0 else config_num_classes(config)
+    if num_classes < 2:
+        raise ValueError('multiclass training requires at least 2 classes.')
+    return num_classes, config
+
+
+def resolve_class_weights(values, num_classes):
+    if values is None:
+        return None
+    if len(values) != num_classes:
+        raise ValueError('--class-weights expects {} values, got {}'.format(num_classes, len(values)))
+    return torch.tensor(values, dtype=torch.float32).cuda()
+
+
+def checkpoint_payload(net, args, num_classes, class_config):
+    payload = {
+        'state_dict': net.state_dict(),
+        'task': args.task,
+        'num_classes': num_classes,
+        'edge_channels': args.edge_channels,
+        'image_size': args.image_size,
+    }
+    if class_config is not None:
+        payload['class_config'] = class_config
+        payload['class_config_path'] = args.class_config
+    return payload
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Train EGCIENet with a distilled edge branch.')
+    parser.add_argument('--task', choices=('binary', 'multiclass'), default='binary')
     parser.add_argument('--train-root', default='./Dataset/AEBIS/Train/', help='Training dataset root.')
+    parser.add_argument('--class-config', default='./Dataset/AEBIS_MultiClass/classes.json')
+    parser.add_argument('--num-classes', type=int, default=0, help='Override number of classes for multiclass.')
+    parser.add_argument(
+        '--class-weights',
+        type=float,
+        nargs='*',
+        default=None,
+        help='Optional CE weights, one value per class. Example: --class-weights 0.2 1 1 1 1',
+    )
     parser.add_argument('--save-path', default='./model', help='Directory for checkpoints.')
     parser.add_argument(
         '--pretrained',
@@ -108,7 +188,16 @@ if __name__ == '__main__':
     set_seed(args.seed)
     torch.backends.cudnn.benchmark = True
 
-    dataset = Data(args.train_root, mode='train', image_size=args.image_size, require_edge=True)
+    num_classes, class_config = resolve_num_classes(args.task, args.class_config, args.num_classes)
+    class_weights = resolve_class_weights(args.class_weights, num_classes)
+
+    dataset = Data(
+        args.train_root,
+        mode='train',
+        image_size=args.image_size,
+        require_edge=True,
+        task=args.task,
+    )
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -119,7 +208,7 @@ if __name__ == '__main__':
     )
 
     pretrained = resolve_pretrained(args.pretrained)
-    net = Mnet(pretrained=pretrained, edge_channels=args.edge_channels).cuda()
+    net = Mnet(pretrained=pretrained, edge_channels=args.edge_channels, num_classes=num_classes).cuda()
     optimizer = optim.SGD(
         filter(lambda p: p.requires_grad, net.parameters()),
         lr=args.lr,
@@ -129,6 +218,7 @@ if __name__ == '__main__':
     scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
 
     num_params = sum(p.numel() for p in net.parameters())
+    print('task: {}, num_classes: {}'.format(args.task, num_classes))
     print('params: {:.2f}M'.format(num_params / 1e6))
     print('train samples: {}, iters/epoch: {}'.format(len(dataset), len(loader)))
 
@@ -150,8 +240,11 @@ if __name__ == '__main__':
 
         while rgb is not None:
             i += 1
-            label = label.clamp(0, 1)
-            edge = edge.clamp(0, 1)
+            if args.task == 'multiclass':
+                label = label.long()
+            else:
+                label = label.float().clamp(0, 1)
+            edge = edge.float().clamp(0, 1)
 
             optimizer.zero_grad()
             with torch.cuda.amp.autocast(enabled=args.amp):
@@ -160,7 +253,15 @@ if __name__ == '__main__':
                     edge=edge,
                     use_teacher_edge=args.use_teacher_edge_in_seg,
                 )
-                seg_loss = segmentation_loss(score1, score2, score3, label)
+                seg_loss = segmentation_loss(
+                    score1,
+                    score2,
+                    score3,
+                    label,
+                    args.task,
+                    num_classes,
+                    class_weights,
+                )
                 e_loss = edge_loss(edge_logit, edge)
                 total_loss = seg_loss + args.edge_loss_weight * e_loss
 
@@ -194,6 +295,12 @@ if __name__ == '__main__':
             rgb, label, edge = prefetcher.next()
 
         if epochi >= 25 and epochi % 25 == 0:
-            torch.save(net.state_dict(), os.path.join(args.save_path, 'epoch_{}.pth'.format(epochi)))
+            torch.save(
+                checkpoint_payload(net, args, num_classes, class_config),
+                os.path.join(args.save_path, 'epoch_{}.pth'.format(epochi)),
+            )
 
-    torch.save(net.state_dict(), os.path.join(args.save_path, 'final.pth'))
+    torch.save(
+        checkpoint_payload(net, args, num_classes, class_config),
+        os.path.join(args.save_path, 'final.pth'),
+    )

@@ -12,6 +12,8 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from baseline import Mnet  # noqa: E402
+from lib.class_config import load_class_config  # noqa: E402
+from lib.class_config import num_classes as config_num_classes  # noqa: E402
 
 
 class DeployModel(nn.Module):
@@ -27,6 +29,7 @@ class DeployModel(nn.Module):
         self.model = model
         self.output_edge = output_edge
         self.output_logits = output_logits
+        self.num_classes = getattr(model, 'num_classes', 1)
 
     def forward(self, image):
         score1, _, _, _, _, _, edge_logit, edge_prob = self.model(image)
@@ -34,8 +37,10 @@ class DeployModel(nn.Module):
 
         if self.output_logits:
             mask = mask_logit
-        else:
+        elif self.num_classes == 1:
             mask = torch.sigmoid(mask_logit)
+        else:
+            mask = F.softmax(mask_logit, dim=1)
 
         if not self.output_edge:
             return mask
@@ -57,17 +62,30 @@ def strip_module_prefix(state_dict):
     return cleaned
 
 
-def load_mnet(model_path, edge_channels=16, device='cpu', strict=True):
-    model = Mnet(pretrained=False, edge_channels=edge_channels)
+def resolve_num_classes(checkpoint, class_config_path='', num_classes=0):
+    if num_classes > 0:
+        return int(num_classes)
+    if isinstance(checkpoint, dict):
+        checkpoint_classes = int(checkpoint.get('num_classes', 0) or 0)
+        if checkpoint_classes > 0:
+            return checkpoint_classes
+    if class_config_path:
+        return config_num_classes(load_class_config(class_config_path))
+    return 1
+
+
+def load_mnet(model_path, edge_channels=16, device='cpu', strict=True, num_classes=0, class_config=''):
     checkpoint = torch.load(model_path, map_location='cpu')
-    if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-        checkpoint = checkpoint['state_dict']
-    checkpoint = strip_module_prefix(checkpoint)
+    resolved_num_classes = resolve_num_classes(checkpoint, class_config, num_classes)
+    model = Mnet(pretrained=False, edge_channels=edge_channels, num_classes=resolved_num_classes)
+
+    state_dict = checkpoint['state_dict'] if isinstance(checkpoint, dict) and 'state_dict' in checkpoint else checkpoint
+    state_dict = strip_module_prefix(state_dict)
 
     if strict:
-        model.load_state_dict(checkpoint, strict=True)
+        model.load_state_dict(state_dict, strict=True)
     else:
-        missing, unexpected = model.load_state_dict(checkpoint, strict=False)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
         if missing:
             print('missing keys: {}'.format(len(missing)))
         if unexpected:
@@ -111,6 +129,8 @@ def parse_args():
     parser.add_argument('--image-size', type=int, default=352, help='Export input height/width.')
     parser.add_argument('--batch-size', type=int, default=1, help='Export batch size.')
     parser.add_argument('--edge-channels', type=int, default=16)
+    parser.add_argument('--num-classes', type=int, default=0, help='Override output classes. 0 infers from checkpoint.')
+    parser.add_argument('--class-config', default='', help='Optional classes.json for multiclass export.')
     parser.add_argument('--device', default='cuda', choices=['cuda', 'cpu'])
     parser.add_argument('--opset', type=int, default=13)
     parser.add_argument('--output-edge', action='store_true', help='Export edge probability as a second output.')
@@ -133,6 +153,8 @@ def main():
         edge_channels=args.edge_channels,
         device=args.device,
         strict=not args.non_strict,
+        num_classes=args.num_classes,
+        class_config=args.class_config,
     )
     deploy_model = DeployModel(
         base_model,

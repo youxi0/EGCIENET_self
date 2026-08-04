@@ -24,6 +24,51 @@ Dataset/AEBIS/
     Edge/         # optional for inference
 ```
 
+For multiclass semantic segmentation, convert the Labelme annotations in
+`Dataset/AEBIS_Class` first:
+
+```bash
+python tools/convert_labelme_to_multiclass.py \
+  --labelme-root ./Dataset/AEBIS_Class \
+  --binary-root ./Dataset/AEBIS \
+  --out-root ./Dataset/AEBIS_MultiClass
+```
+
+The converter writes:
+
+```text
+Dataset/AEBIS_MultiClass/
+  classes.json
+  Train/
+    JPEGImages/
+    SegClass/     # uint8 class-id masks, 0=background
+    BlackWhite/   # binary projection, useful for sanity checks
+    Edge/         # SAM edge teacher copied from AEBIS
+  Test/
+    JPEGImages/
+    SegClass/
+    BlackWhite/
+    Edge/
+```
+
+The merged class IDs are similarity-based, not just sample-count based:
+
+```text
+0 background
+1 burn            <- Burn
+2 crack_tear      <- Crack, Tears
+3 material_loss   <- Material missing, Nick
+4 deformation     <- Dent, Tip curl
+```
+
+In the current local copy, `AEBIS` and `AEBIS_Class` mostly match by numeric
+file stem, but not perfectly. `AEBIS_Class` is missing 10 Train annotations
+(`248, 251, 254, 263, 266, 269, 274, 284, 501, 517`) and 1 Test annotation
+(`260`). The converter skips these samples and writes split files containing
+only the matched images. Samples without an edge teacher are also skipped by
+default. If you explicitly want to create fallback edges from the segmentation
+mask, add `--generate-missing-edge`.
+
 ## Pretrained backbone
 
 Training uses the MiT-B3 pretrained weights by default:
@@ -59,6 +104,19 @@ Recommended command for a 24 GB RTX 3090:
 python train.py --train-root ./Dataset/AEBIS/Train/ --batch-size 16 --edge-loss-weight 1.0 --gpu 0
 ```
 
+Multiclass semantic segmentation:
+
+```bash
+python train.py \
+  --task multiclass \
+  --train-root ./Dataset/AEBIS_MultiClass/Train/ \
+  --class-config ./Dataset/AEBIS_MultiClass/classes.json \
+  --batch-size 16 \
+  --edge-loss-weight 1.0 \
+  --gpu 0 \
+  --amp
+```
+
 Optional mixed precision:
 
 ```bash
@@ -78,13 +136,34 @@ L = L_seg + edge_loss_weight * BCE(edge_pred, edge_sam)
 ```
 
 `edge_sam` is downsampled to the edge branch output size before BCE. `L_seg`
-keeps the original three-output deep supervision with BCE + IoU.
+keeps the original three-output deep supervision. Binary training uses BCE +
+IoU. Multiclass training uses CrossEntropy + foreground Dice, so background
+pixels do not dominate the Dice term.
 
 ## Test
 
 ```bash
 python test.py --data-root ./Dataset/AEBIS/Test/ --model-path ./model/final.pth --out-path output/aebis/
 ```
+
+Multiclass test:
+
+```bash
+python test.py \
+  --task multiclass \
+  --data-root ./Dataset/AEBIS_MultiClass/Test/ \
+  --model-path ./model/final.pth \
+  --out-path output/aebis_multiclass/ \
+  --class-config ./Dataset/AEBIS_MultiClass/classes.json \
+  --metrics-csv output/aebis_multiclass/metrics.csv \
+  --gpu 0
+```
+
+For multiclass output, `out-path` stores grayscale class-id masks. The sibling
+directory `out-path_color` stores color visualizations for inspection. The test
+script reports both true multiclass metrics (`mIoU_fg`, per-class IoU/Dice) and
+a foreground-vs-background projection for comparison with binary segmentation
+results.
 
 If `Dataset/AEBIS/Test/BlackWhite/` exists, the script will also print binary
 segmentation metrics:

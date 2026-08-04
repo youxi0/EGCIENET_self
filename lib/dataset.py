@@ -26,11 +26,38 @@ def _find_by_stem(directory, stem, exts=IMAGE_EXTS):
     return None
 
 
+def _read_split_file(root, image_dir):
+    split_name = os.path.basename(os.path.normpath(root)).lower()
+    split_file = os.path.join(root, split_name + '.txt')
+    if not os.path.exists(split_file):
+        return None
+
+    image_names = []
+    with open(split_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            stem = os.path.splitext(os.path.basename(line))[0]
+            image_path = _find_by_stem(image_dir, stem)
+            if image_path is None:
+                raise FileNotFoundError('Split file references missing image: {}'.format(line))
+            image_names.append(os.path.basename(image_path))
+    return image_names
+
+
 def _read_color(path):
     image = cv2.imread(path, cv2.IMREAD_COLOR)
     if image is None:
         raise FileNotFoundError('Could not read image: {}'.format(path))
     return image.astype(np.float32)
+
+
+def _read_gray(path):
+    image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        raise FileNotFoundError('Could not read image: {}'.format(path))
+    return image
 
 
 class Data(Dataset):
@@ -40,23 +67,26 @@ class Data(Dataset):
     Test mode returns RGB, original size, and name. Inference does not require SAM.
     """
 
-    def __init__(self, root, mode='train', image_size=352, require_edge=True):
+    def __init__(self, root, mode='train', image_size=352, require_edge=True, task='binary'):
         self.root = root
         self.mode = mode
         self.require_edge = require_edge
+        self.task = task
         self.samples = []
 
         image_dir = os.path.join(root, 'JPEGImages')
-        mask_dir = os.path.join(root, 'BlackWhite')
+        mask_dir = os.path.join(root, 'SegClass' if task == 'multiclass' else 'BlackWhite')
         edge_dir = os.path.join(root, 'Edge')
 
         if not os.path.isdir(image_dir):
             raise FileNotFoundError('Missing JPEGImages directory: {}'.format(image_dir))
 
-        image_names = [
-            name for name in sorted(os.listdir(image_dir))
-            if os.path.splitext(name)[1].lower() in IMAGE_EXTS
-        ]
+        image_names = _read_split_file(root, image_dir)
+        if image_names is None:
+            image_names = [
+                name for name in sorted(os.listdir(image_dir))
+                if os.path.splitext(name)[1].lower() in IMAGE_EXTS
+            ]
 
         for image_name in image_names:
             stem = os.path.splitext(image_name)[0]
@@ -79,16 +109,16 @@ class Data(Dataset):
 
         if mode == 'train':
             self.transform = transform.Compose(
-                transform.Normalize(mean1=mean_rgb, std1=std_rgb),
+                transform.Normalize(mean1=mean_rgb, std1=std_rgb, scale_mask=(task != 'multiclass')),
                 transform.Resize(image_size, image_size),
                 transform.RandomHorizontalFlip(),
-                transform.ToTensor(),
+                transform.ToTensor(mask_mode=task),
             )
         elif mode == 'test':
             self.transform = transform.Compose(
-                transform.Normalize(mean1=mean_rgb, std1=std_rgb),
+                transform.Normalize(mean1=mean_rgb, std1=std_rgb, scale_mask=(task != 'multiclass')),
                 transform.Resize(image_size, image_size),
-                transform.ToTensor(),
+                transform.ToTensor(mask_mode=task),
             )
         else:
             raise ValueError('Unsupported mode: {}'.format(mode))
@@ -99,7 +129,10 @@ class Data(Dataset):
         h, w = rgb.shape[:2]
 
         if self.mode == 'train':
-            mask = _read_color(sample['mask'])
+            if self.task == 'multiclass':
+                mask = _read_gray(sample['mask'])
+            else:
+                mask = _read_color(sample['mask'])
             if sample['edge'] is not None:
                 edge = _read_color(sample['edge'])
             else:
@@ -119,12 +152,12 @@ class Data(Dataset):
 class CombinedDataset(Dataset):
     """Combine two training roots with the same ISAEB folder layout."""
 
-    def __init__(self, root1, root2, mode='train', image_size=352, require_edge=True):
+    def __init__(self, root1, root2, mode='train', image_size=352, require_edge=True, task='binary'):
         if mode != 'train':
             raise ValueError('CombinedDataset is intended for training only.')
         self.datasets = [
-            Data(root1, mode=mode, image_size=image_size, require_edge=require_edge),
-            Data(root2, mode=mode, image_size=image_size, require_edge=require_edge),
+            Data(root1, mode=mode, image_size=image_size, require_edge=require_edge, task=task),
+            Data(root2, mode=mode, image_size=image_size, require_edge=require_edge, task=task),
         ]
         self.lengths = [len(dataset) for dataset in self.datasets]
 

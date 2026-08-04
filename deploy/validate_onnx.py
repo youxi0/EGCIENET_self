@@ -41,7 +41,10 @@ def save_mask(path, mask):
         return
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     mask = np.squeeze(mask)
-    mask = np.clip(mask * 255.0, 0, 255).astype(np.uint8)
+    if mask.ndim == 3:
+        mask = np.argmax(mask, axis=0).astype(np.uint8)
+    else:
+        mask = np.clip(mask * 255.0, 0, 255).astype(np.uint8)
     cv2.imwrite(path, mask)
     print('saved ONNX mask: {}'.format(path))
 
@@ -53,6 +56,8 @@ def parse_args():
     parser.add_argument('--image-path', default='', help='Optional input image. Random input is used if empty.')
     parser.add_argument('--image-size', type=int, default=352)
     parser.add_argument('--edge-channels', type=int, default=16)
+    parser.add_argument('--num-classes', type=int, default=0, help='Override output classes. 0 infers from checkpoint.')
+    parser.add_argument('--class-config', default='', help='Optional classes.json for multiclass validation.')
     parser.add_argument('--device', default='cuda', choices=['cuda', 'cpu'])
     parser.add_argument('--save-mask', default='', help='Optional path to save ONNX mask probability as png.')
     return parser.parse_args()
@@ -71,7 +76,13 @@ def main():
 
     input_np = make_input(args.image_path, args.image_size)
 
-    base_model = load_mnet(args.model_path, edge_channels=args.edge_channels, device=args.device)
+    base_model = load_mnet(
+        args.model_path,
+        edge_channels=args.edge_channels,
+        device=args.device,
+        num_classes=args.num_classes,
+        class_config=args.class_config,
+    )
     torch_model = DeployModel(base_model, output_edge=False, output_logits=False).to(args.device)
     torch_model.eval()
     with torch.no_grad():

@@ -18,7 +18,7 @@ class DataPrefetcher(object):
 
         with torch.cuda.stream(self.stream):
             self.next_rgb = self.next_rgb.cuda(non_blocking=True).float()
-            self.next_gt = self.next_gt.cuda(non_blocking=True).float()
+            self.next_gt = self.next_gt.cuda(non_blocking=True)
             self.next_edge = self.next_edge.cuda(non_blocking=True).float()
 
 

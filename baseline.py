@@ -181,17 +181,18 @@ class EdgeBranch(nn.Module):
 
 
 class Decoder(nn.Module):  # 解码器
-    def __init__(self):
+    def __init__(self, num_classes=1):
         super(Decoder, self).__init__()
+        self.num_classes = num_classes
 
         self.d31 = GAM(320, 64)
         self.d42 = GAM(512, 128)
         self.d42_31 = GAM(128, 64)  # 拟合
 
-        self.score_1 = nn.Conv2d(64, 1, 1, 1, 0)
-        self.score_2 = nn.Conv2d(128, 1, 1, 1, 0)
-        self.score_3 = nn.Conv2d(320, 1, 1, 1, 0)
-        self.score_4 = nn.Conv2d(512, 1, 1, 1, 0)
+        self.score_1 = nn.Conv2d(64, num_classes, 1, 1, 0)
+        self.score_2 = nn.Conv2d(128, num_classes, 1, 1, 0)
+        self.score_3 = nn.Conv2d(320, num_classes, 1, 1, 0)
+        self.score_4 = nn.Conv2d(512, num_classes, 1, 1, 0)
 
         # FEM
         self.FEM4 = CSIM(in_ch=512, out_ch=512)
@@ -243,14 +244,15 @@ class Segformer(nn.Module):
 
 
 class Mnet(nn.Module):
-    def __init__(self, backbone="mit_b3", pretrained=True, edge_channels=16):
+    def __init__(self, backbone="mit_b3", pretrained=True, edge_channels=16, num_classes=1):
         super(Mnet, self).__init__()
 
+        self.num_classes = num_classes
         net = Segformer(backbone, pretrained)
         self.rgb_encoder = net.encoder
         edge_embed_dim = self.rgb_encoder.embed_dims[0]
         self.edge_branch = EdgeBranch(base_ch=edge_channels, embed_dim=edge_embed_dim)
-        self.decoder = Decoder()
+        self.decoder = Decoder(num_classes=num_classes)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, rgb, edge=None, use_teacher_edge=False):
@@ -301,6 +303,13 @@ class Mnet(nn.Module):
 
         score1, score2, score3 = self.decoder(rgb_f)
 
-        # return score1
-        return score1, score2, score3, self.sigmoid(score1), self.sigmoid(score2), \
-               self.sigmoid(score3), edge_logit, self.sigmoid(edge_logit)
+        if self.num_classes == 1:
+            prob1 = self.sigmoid(score1)
+            prob2 = self.sigmoid(score2)
+            prob3 = self.sigmoid(score3)
+        else:
+            prob1 = F.softmax(score1, dim=1)
+            prob2 = F.softmax(score2, dim=1)
+            prob3 = F.softmax(score3, dim=1)
+
+        return score1, score2, score3, prob1, prob2, prob3, edge_logit, self.sigmoid(edge_logit)
