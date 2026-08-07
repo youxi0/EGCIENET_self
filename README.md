@@ -69,6 +69,23 @@ only the matched images. Samples without an edge teacher are also skipped by
 default. If you explicitly want to create fallback edges from the segmentation
 mask, add `--generate-missing-edge`.
 
+YOLO segmentation datasets can also be converted to the same test layout. For
+example, converting only the `test` split from an `images/{train,val,test}` and
+`labels/{train,val,test}` YOLO directory:
+
+```bash
+python tools/convert_yolo_seg_to_egcienet.py \
+  --images-root /path/to/aebad_yolo/images \
+  --out-root ./Dataset/AEBAD_YOLO \
+  --splits test
+```
+
+The converter writes `Test/JPEGImages`, `Test/BlackWhite`, `Test/SegClass`, and
+`Test/test.txt`. By default, YOLO class ids are shifted by 1, so YOLO `0,1,2,3`
+become mask ids `1,2,3,4`, while mask id `0` stays background. If the YOLO class
+semantics do not match the AEBIS merged classes, use the binary metrics or pass
+an explicit `--class-map`.
+
 ## Pretrained backbone
 
 Training uses the MiT-B3 pretrained weights by default:

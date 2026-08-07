@@ -167,6 +167,10 @@ def main():
     config_path = args.config_out or os.path.join(args.out_root, 'classes.json')
     config = write_class_config(config_path)
     class_map = raw_label_to_class_id(config)
+    class_id_to_name = {
+        int(item['id']): item['name']
+        for item in config['classes']
+    }
 
     train_stems = set(read_split(os.path.join(args.binary_root, 'Train', 'train.txt')))
     test_stems = set(read_split(os.path.join(args.binary_root, 'Test', 'test.txt')))
@@ -183,6 +187,7 @@ def main():
         json_dir_by_stem[file_stem] = json_dir
 
     label_counter = Counter()
+    merged_counter = Counter()
     written = Counter()
     written_stems = {'Train': [], 'Test': []}
     missing = []
@@ -211,6 +216,9 @@ def main():
                 continue
 
             label_counter.update(labels)
+            for raw_label, count in labels.items():
+                class_id = int(class_map[raw_label])
+                merged_counter[class_id_to_name[class_id]] += count
 
             cv2.imwrite(os.path.join(dirs['images'], file_stem + '.jpg'), image)
             cv2.imwrite(os.path.join(dirs['seg'], file_stem + '.png'), seg)
@@ -229,6 +237,12 @@ def main():
     print('raw label polygons:')
     for label, count in label_counter.most_common():
         print('  {}: {}'.format(label, count))
+    print('merged class polygons:')
+    for class_id in sorted(class_id_to_name.keys()):
+        class_name = class_id_to_name[class_id]
+        if class_id == 0:
+            continue
+        print('  {}({}): {}'.format(class_name, class_id, merged_counter[class_name]))
     if missing:
         print('missing JSON annotations: {}'.format(len(missing)))
         print('  {}'.format(', '.join(missing[:20])))
