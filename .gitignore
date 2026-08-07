@@ -9,3 +9,8 @@ output/
 .DS_Store
 Thumbs.db
 mit_b3.pth
+*.onnx
+*.cache
+AEBIS/
+AEBIS_Class/
+AEBIS_MultiClass/

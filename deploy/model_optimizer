@@ -1,0 +1,56 @@
+import onnx
+from modelopt.onnx.quantization import quantize
+
+onnx_path = "deploy/egcienet_352_multiclass.onnx"
+cache_path = "deploy/egcienet_352_multiclass_int8.cache"
+output_path = "deploy/egcienet_352_multiclass_qdq_v1.onnx"
+
+targets = [
+    f"/model/decoder/FEM{fem}/conv{conv}/Conv"
+    for fem in range(1, 5)
+    for conv in range(1, 4)
+]
+
+targets += [
+    f"/model/decoder/{name}/conv_pre/conv_pre.0/Conv"
+    for name in ("d31", "d42", "d42_31")
+]
+
+# 转换前严格验证15个节点。
+model = onnx.load(onnx_path, load_external_data=False)
+conv_nodes = {
+    node.name
+    for node in model.graph.node
+    if node.op_type == "Conv"
+}
+
+missing = [name for name in targets if name not in conv_nodes]
+if len(targets) != 15 or missing:
+    raise RuntimeError(f"target validation failed: {missing}")
+
+quantize(
+    onnx_path=onnx_path,
+    output_path=output_path,
+    quantize_mode="int8",
+
+    # 复用V5校准得到的激活范围。
+    calibration_cache_path=cache_path,
+
+    # 仅量化名单中的15个Conv。
+    op_types_to_quantize=["Conv"],
+    nodes_to_quantize=targets,
+
+    # 其余网络保持FP16。
+    high_precision_dtype="fp16",
+
+    # 尽量避免额外图改写干扰实验。
+    passes=[],
+    simplify=False,
+    direct_io_types=False,
+    keep_intermediate_files=True,
+    use_external_data_format=False,
+    opset=19,
+    log_level="INFO",
+)
+
+print(f"[PASS] Q/DQ ONNX: {output_path}")
