@@ -87,15 +87,24 @@ def require_direct_edge(
     target: NodeProto,
     consumers: Dict[str, List[NodeProto]],
     exclusive: bool = True,
+    allowed_extra_consumers: Sequence[Tuple[str, str]] = (),
 ) -> None:
-    """检查两个节点是否直连，并可要求源 tensor 不存在其他消费者。"""
+    """检查两个节点是否直连，并可按节点名和类型放行指定的额外消费者。"""
     if len(source.output) != 1 or source.output[0] not in target.input:
         raise RuntimeError(
             "expected direct edge {} -> {}".format(source.name, target.name)
         )
     if exclusive:
         actual = consumers.get(source.output[0], [])
-        if len(actual) != 1 or actual[0].name != target.name:
+        target_consumers = [node for node in actual if node.name == target.name]
+        allowed_extra = set(allowed_extra_consumers)
+        unexpected = [
+            node
+            for node in actual
+            if node.name != target.name
+            and (node.name, node.op_type) not in allowed_extra
+        ]
+        if len(target_consumers) != 1 or unexpected:
             raise RuntimeError(
                 "{} output has unexpected consumers: {}".format(
                     source.name,
@@ -267,7 +276,15 @@ def replace_one_block(
 
     require_direct_edge(transpose_in, reshape_in, consumers)
     require_direct_edge(reshape_in, conv, consumers)
-    require_direct_edge(conv, reshape_out, consumers)
+    # 动态导出的 Reshape 会通过 Shape 读取 Conv 输出尺寸，再构造 Reshape_1
+    # 的第二个输入。Shape 只参与形状计算，不读取实际特征值；替换完成后该支路
+    # 会失去用途，并由后面的反向活性分析整体删除。
+    require_direct_edge(
+        conv,
+        reshape_out,
+        consumers,
+        allowed_extra_consumers=((dwconv_prefix + "/Shape", "Shape"),),
+    )
     require_direct_edge(reshape_out, transpose_out, consumers)
 
     # 步骤 6：验证精确 GELU：x * (1 + erf(x / sqrt(2))) * 0.5。
@@ -350,33 +367,45 @@ def replace_one_block(
     )
 
 
-def remove_dead_constants_and_initializers(model: ModelProto) -> None:
-    """删除旧 Reshape 链遗留的无消费者 Constant 和未使用 initializer。"""
+def remove_dead_nodes_and_initializers(model: ModelProto) -> None:
+    """从图输出反向保留有效计算，删除旧布局链遗留的形状支路和参数。"""
+    original_nodes = list(model.graph.node)
+    producer_index: Dict[str, int] = {}
+    for index, node in enumerate(original_nodes):
+        for output_name in node.output:
+            if output_name:
+                producer_index[output_name] = index
+
+    # 步骤 1：从全部图输出反向遍历生产者。只有真正参与最终输出计算的节点
+    # 才会被标记为有效，因此 Conv -> Shape -> ... -> Reshape_1 的动态形状
+    # 支路会随着 Reshape_1 一起被安全删除。
+    live_node_indices = set()
+    pending_tensors = [value.name for value in model.graph.output]
+    while pending_tensors:
+        tensor_name = pending_tensors.pop()
+        node_index = producer_index.get(tensor_name)
+        if node_index is None or node_index in live_node_indices:
+            continue
+        live_node_indices.add(node_index)
+        pending_tensors.extend(
+            input_name
+            for input_name in original_nodes[node_index].input
+            if input_name
+        )
+
+    kept_nodes = [
+        node
+        for index, node in enumerate(original_nodes)
+        if index in live_node_indices
+    ]
+    removed_nodes = len(original_nodes) - len(kept_nodes)
+    del model.graph.node[:]
+    model.graph.node.extend(kept_nodes)
+    if removed_nodes:
+        print("[CLEAN  ] removed {} dead nodes".format(removed_nodes))
+
+    # 步骤 2：按有效节点的输入集合清理已经不再使用的 shape initializer。
     graph_outputs = {value.name for value in model.graph.output}
-
-    # 步骤 1：反复清理无消费者 Constant，直到没有新的死节点出现。
-    while True:
-        _, _, consumers = build_maps(model)
-        removable_outputs = {
-            tuple(node.output)
-            for node in model.graph.node
-            if node.op_type == "Constant"
-            and all(
-                not consumers.get(output_name) and output_name not in graph_outputs
-                for output_name in node.output
-            )
-        }
-        if not removable_outputs:
-            break
-        kept = [
-            node
-            for node in model.graph.node
-            if tuple(node.output) not in removable_outputs
-        ]
-        del model.graph.node[:]
-        model.graph.node.extend(kept)
-
-    # 步骤 2：按剩余节点输入集合清理已经不再使用的 shape initializer。
     used_inputs = {
         input_name
         for node in model.graph.node
@@ -512,7 +541,7 @@ def main() -> None:
 
     # 步骤 3：补充自定义 opset、清理死节点并执行保存前终检。
     ensure_plugin_opset(model)
-    remove_dead_constants_and_initializers(model)
+    remove_dead_nodes_and_initializers(model)
     validate_rewritten_model(model)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
